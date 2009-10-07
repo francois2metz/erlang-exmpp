@@ -1,7 +1,8 @@
 {
 	[
 		'@srcdir@/echo_client',
-		'@srcdir@/bosh_client'
+		'@srcdir@/bosh_client',
+		'@srcdir@/bosh_client_sasl'
 	],
 	[
 		@EMKOPTS@,

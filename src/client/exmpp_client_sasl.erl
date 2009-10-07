@@ -34,6 +34,9 @@
 -export([
 	 selected_mechanism/1,
 	 selected_mechanism/2,
+	 decode_challenge/1,
+	 sasl_step2/4,
+	 sasl_step3/4,
 	 response/1,
 	 abort/0,
 	 next_step/1
@@ -152,3 +155,115 @@ next_step(#xmlel{ns = ?NS_SASL, name = 'failure'}) ->
 next_step(#xmlel{ns = ?NS_SASL, name = 'success'} = El) ->
     Encoded = exmpp_xml:get_cdata_as_list(El),
     {success, base64:decode_to_string(Encoded)}.
+
+decode_challenge(Data) ->
+    [{"nonce", Nonce}, {"qop", Qop}, {"charset", Charset},{"algorithm", Algorithm}] = parse(Data),
+    {Nonce, Qop, Charset, Algorithm}.
+    
+%% TODO: save Nonce and Cnonce
+sasl_step2(ChallengeData, Username, Domain, Password) ->
+    {Nonce, Qop, Charset, _Algorithm} = decode_challenge(ChallengeData),
+    Cnonce = integer_to_list(random:uniform(65536 * 65536)),
+    Digest = "xmpp/"++ Domain,
+    crypto:start(),
+    %% TODO: replace localhost
+    Response_Data = encode(Username, Password, "localhost", Nonce, Cnonce, Digest, "00000001", Qop),
+    response(Response_Data).
+
+%% TODO: use Nc and Qop
+encode(Username, Password, Realm, Nonce, Cnonce, Digest, _Nc, _Qop) ->
+    A1 = binary_to_list(crypto:md5(Username ++":" ++ Realm ++ ":" ++ Password)) ++ ":" ++ Nonce ++ ":" ++ Cnonce,
+    A2 = "AUTHENTICATE:" ++ Digest,
+    Response = hex(binary_to_list(crypto:md5(A1))) 
+                   ++ ":" ++ Nonce ++ ":00000001:" 
+                   ++ Cnonce ++ ":auth:" ++ hex(binary_to_list(crypto:md5(A2))),
+    Response2 = hex(binary_to_list(crypto:md5(Response))),
+    "username=\"" ++ Username ++ "\"," ++
+        "realm=\""    ++ Realm    ++ "\"," ++
+        "nonce=\""    ++ Nonce    ++ "\"," ++
+        "cnonce=\""   ++ Cnonce   ++ "\"," ++
+        "nc=\"00000001\"," ++
+        "qop=\"auth\"," ++
+        "digest-uri=\"" ++ Digest ++ "\"," ++
+        "response=\"" ++ Response2 ++ "\"," ++
+        "charset=\"utf-8\"".
+
+%%
+sasl_step3(ChallengeData, Username, Domain, Password) ->
+    #xmlel{
+            ns = ?NS_SASL,
+            name = 'response'
+           }.
+    %% A1 = binary_to_list(crypto:md5(Username ++":"++ Domain ++":"++ Password)) ++
+    %%     ":"++ Nonce ++":"++ Cnonce,
+    %% A2 = ":"+ Digest,
+
+    %% Rspauth = hex(binary_to_list(crypto:md5(A1))) ++ ":"++ Nonce ++":"++ Nc ++":" ++
+    %%                     Cnonce ++ ":auth:"++ hex(binary_to_list(crypto:md5(A2))),
+    %% case hex(binary_to_list(crypto:md5(RspAuth))) of
+    %%     ChallengeData ->
+    %%         #xmlel{
+    %%             ns = ?NS_SASL,
+    %%             name = 'response'
+    %%         };
+    %%     _ ->
+    %%         abort()
+    %% end.
+
+%% From ejabberd (cyrsasl_digest.erl)    
+hex(S) ->
+    hex(S, []).
+
+hex([], Res) ->
+    lists:reverse(Res);
+hex([N | Ns], Res) ->
+    hex(Ns, [digit_to_xchar(N rem 16),
+             digit_to_xchar(N div 16) | Res]).
+
+
+digit_to_xchar(D) when (D >= 0) and (D < 10) ->
+    D + 48;
+digit_to_xchar(D) ->
+    D + 87.
+
+
+parse(S) ->
+    parse1(S, "", []).
+
+parse1([$= | Cs], S, Ts) ->
+    parse2(Cs, lists:reverse(S), "", Ts);
+parse1([$, | Cs], [], Ts) ->
+    parse1(Cs, [], Ts);
+parse1([$\s | Cs], [], Ts) ->
+    parse1(Cs, [], Ts);
+parse1([C | Cs], S, Ts) ->
+    parse1(Cs, [C | S], Ts);
+parse1([], [], T) ->
+    lists:reverse(T);
+parse1([], _S, _T) ->
+    bad.
+
+parse2([$\" | Cs], Key, Val, Ts) ->
+    parse3(Cs, Key, Val, Ts);
+parse2([C | Cs], Key, Val, Ts) ->
+    parse4(Cs, Key, [C | Val], Ts);
+parse2([], _, _, _) ->
+    bad.
+
+parse3([$\" | Cs], Key, Val, Ts) ->
+    parse4(Cs, Key, Val, Ts);
+parse3([$\\, C | Cs], Key, Val, Ts) ->
+    parse3(Cs, Key, [C | Val], Ts);
+parse3([C | Cs], Key, Val, Ts) ->
+    parse3(Cs, Key, [C | Val], Ts);
+parse3([], _, _, _) ->
+    bad.
+
+parse4([$, | Cs], Key, Val, Ts) ->
+    parse1(Cs, "", [{Key, lists:reverse(Val)} | Ts]);
+parse4([$\s | Cs], Key, Val, Ts) ->
+    parse4(Cs, Key, Val, Ts);
+parse4([C | Cs], Key, Val, Ts) ->
+    parse4(Cs, Key, [C | Val], Ts);
+parse4([], Key, Val, Ts) ->
+    parse1([], "", [{Key, lists:reverse(Val)} | Ts]).

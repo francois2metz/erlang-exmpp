@@ -45,7 +45,7 @@
 
 %% XMPP Session API:
 -export([start/0, start_link/0, start_debug/0, stop/1]).
--export([auth_basic/3, auth_basic_digest/3,
+-export([auth_basic/3, auth_basic_digest/3, auth_sasl_digest_md5/3,
 	 connect_SSL/3, connect_SSL/4,
 	 connect_TCP/3, connect_TCP/4,
 	 connect_BOSH/4,
@@ -64,10 +64,14 @@
 
 %% States
 -export([setup/3, wait_for_stream/2, wait_for_stream/3,
+	 wait_for_stream_features/2, wait_for_stream_features/3,
+	 stream_opened_features/2,
 	 stream_opened/2, stream_opened/3,
 	 stream_error/2, stream_error/3,
 	 stream_closed/2, stream_closed/3,
 	 wait_for_legacy_auth_method/2,
+	 wait_for_sasl_challenge/2, wait_for_sasl_result/2, 
+	 wait_for_sasl_result2/2,
 	 wait_for_auth_result/2,
 	 wait_for_register_result/2,
 	 logged_in/2, logged_in/3
@@ -86,6 +90,7 @@
 	  stream_id = false, %% XMPP StreamID (Used for digest_auth)
 	  stream_error,
 	  receiver_ref,
+          sasl = [{cnonce, ""}, {nonce, ""}], %% used for sals auth
 	  from_pid           %% Use by gen_fsm to handle postponed replies
 	 }).
 
@@ -146,6 +151,17 @@ auth_basic_digest(Session, JID, Password)
 	false -> erlang:error({incorrect_jid,JID});
 	true ->
 	    Auth = {basic, digest, JID, Password},
+	    gen_fsm:sync_send_event(Session, {set_auth, Auth})
+    end.
+
+%% Set authentification mode to sasl digest md5
+auth_sasl_digest_md5(Session, JID, Password)
+  when is_pid(Session),
+       is_list(Password) ->
+    case exmpp_jid:is_jid(JID) of
+	false -> erlang:error({incorrect_jid,JID});
+	true ->
+	    Auth = {sasl, digest_md5, JID, Password},
 	    gen_fsm:sync_send_event(Session, {set_auth, Auth})
     end.
 
@@ -332,7 +348,7 @@ reply(_, _) ->
 %% Function:
 %% code_change(OldVsn, StateName, State, Extra) -> {ok, StateName, NewState}
 %% Description: Convert process state when code is changed
-%%--------------------------------------------------------------------
+%%-------------------------------------------------------------------
 code_change(_OldVsn, StateName, State, _Extra) ->
     {ok, StateName, State}.
 
@@ -381,27 +397,37 @@ setup(_UnknownMessage, _From, State) ->
 %% Standard opening stream:
 -define(stream,
 	#xmlstreamstart{element=#xmlel{
-			  ns='http://etherx.jabber.org/streams',
+			  ns=?NS_XMPP,
 			  name=stream}}).
+-define(streamfeatures,
+       #xmlstreamelement{
+         element=#xmlel{ns=?NS_XMPP, name=features} = Features}).
+
+
 %% Standard stream error:
 -define(streamerror,
 	#xmlstreamelement{element=#xmlel{
-			    ns='http://etherx.jabber.org/streams',
+			    ns=?NS_XMPP,
 			    name=error,
 			    children=[#xmlel{name=Reason} | _MoreReasons]}}).
 
 %% Special stream error: disconnected
 -define(streamdisconnected,
         #xmlstreamelement{element=#xmlel{
-			    ns='http://etherx.jabber.org/streams',
+			    ns=?NS_XMPP,
 			    name=error,
 			    children=[#xmlcdata{cdata=  <<"Disconnected">> }]}}).
 
 %% Standard end of stream:
 -define(streamend,
         #xmlstreamend{endtag=#xmlendtag{
-			ns='http://etherx.jabber.org/streams',
+			ns=?NS_XMPP,
 			name=stream}}).
+
+%% SASL Exchange
+-define(saslexchange, 
+        #xmlstreamelement{
+	  element=#xmlel{ns=?NS_SASL} = SaslPacket}).
 
 %% Extract IQElement from IQ
 -define(iq,
@@ -428,6 +454,7 @@ setup(_UnknownMessage, _From, State) ->
 %% We cannot receive API call in this state
 wait_for_stream(_Event, _From, State) ->
     {reply, {error, busy_connecting_to_server}, wait_for_stream, State}.
+
 %% TODO: Check that we receive a client stream. Need change in the
 %% parsing library.
 wait_for_stream(Start = ?stream, State = #state{connection = _Module,
@@ -440,6 +467,29 @@ wait_for_stream(Start = ?stream, State = #state{connection = _Module,
     {next_state, stream_opened, State#state{from_pid=undefined,
 					    stream_id = StreamId}}.
 
+%% We cannot receive API call in this state
+wait_for_stream_features(_Event, _From, State) ->
+    {reply, {error, busy_connecting_to_server}, wait_for_stream, State}.
+
+%% TODO: Check that we receive a client stream. Need change in the
+%% parsing library.
+wait_for_stream_features(Start = ?stream, State = #state{connection = _Module,
+						connection_ref = _ConnRef,
+						auth_method = _Auth,
+						from_pid = From}) ->
+    %% Get StreamID
+    StreamId = exmpp_xml:get_attribute_as_list(Start#xmlstreamstart.element, id, ""),
+    gen_fsm:reply(From, StreamId),
+    {next_state, stream_opened_features, State#state{from_pid=undefined,
+                                                     stream_id = StreamId}}.
+
+stream_opened_features(?streamfeatures, State = #state{connection = _Module,
+                                                connection_ref = _ConnRef,
+                                                from_pid = From}) ->
+    _M = exmpp_client_sasl:announced_mechanisms(Features),
+    %% TODO: check if selected mecanism is available
+    {next_state, stream_opened, State#state{from_pid=From}}.
+
 %% ---------------------------
 %% Between stream opening and session opening
 
@@ -451,13 +501,20 @@ stream_opened({login}, From, State=#state{connection = Module,
 					  connection_ref = ConnRef,
 					  auth_method=Auth}) ->
     %% Retrieve supported authentication methods:
-    %% TODO: Do different thing if we use basic or SASL auth
-    %% For now, we consider everything is legacy (basic)
-    Domain = get_domain(Auth),
-    Username = get_username(Auth),
-    Module:send(ConnRef,
- 		exmpp_client_legacy_auth:request_with_user(Domain, Username)),
-    {next_state, wait_for_legacy_auth_method, State#state{from_pid=From}};
+    %% basic (legacy) or sasl (recommended)
+    case get_auth_type(Auth) of
+        basic ->
+            Domain = get_domain(Auth),
+            Username = get_username(Auth),
+            Module:send(ConnRef,
+                        exmpp_client_legacy_auth:request_with_user(Domain, Username)),
+            {next_state, wait_for_legacy_auth_method, State#state{from_pid=From}};
+        sasl ->
+            Module:send(ConnRef, 
+                        exmpp_client_sasl:selected_mechanism(get_sasl_mecanism(Auth))),
+            {next_state, wait_for_sasl_challenge, State#state{from_pid=From}}
+    end;
+
 stream_opened({register_account, Password}, From,
 	      State=#state{connection = Module,
 			   connection_ref = ConnRef,
@@ -520,6 +577,47 @@ stream_closed(_Signal, _From, State) ->
     {reply, {stream_error, State#state.stream_error}, stream_closed, State}.
 stream_closed(_Signal, State) ->
     {next_state, stream_closed, State}.
+
+%% SASL
+%% TODO: test auth type
+wait_for_sasl_challenge(?saslexchange, State = #state{connection = Module,
+                                                       connection_ref = ConnRef,
+                                                       auth_method = Auth}) ->
+    case exmpp_client_sasl:next_step(SaslPacket) of 
+        {challenge, Data} ->
+            Domain = get_domain(Auth),
+            Username = get_username(Auth),
+            Password = get_password(Auth),
+            Module:send(ConnRef, exmpp_client_sasl:sasl_step2(Data, Username, Domain, Password)),
+            {next_state, wait_for_sasl_result, State#state{from_pid=undefined}};
+        {failure, Reason} ->
+	    {stop, {error, Reason}, State}
+    end.
+
+
+wait_for_sasl_result(?saslexchange, State = #state{connection = Module,
+                                                    connection_ref = ConnRef,
+                                                    auth_method = Auth}) ->
+    case exmpp_client_sasl:next_step(SaslPacket) of 
+        {challenge, Data} ->
+            Domain = get_domain(Auth),
+            Username = get_username(Auth),
+            Password = get_password(Auth),
+            Module:send(ConnRef, exmpp_client_sasl:sasl_step3(Data, Username, Domain, Password)),
+            {next_state, wait_for_sasl_result2, State#state{from_pid=undefined}};
+        {failure, Reason} ->
+	    {stop, {error, Reason}, State}
+    end.
+
+wait_for_sasl_result2(?saslexchange, State = #state{connection = Module,
+                                                    connection_ref = ConnRef}) ->
+    case exmpp_client_sasl:next_step(SaslPacket) of 
+        {success, Data} ->
+
+            {next_state, wait_for_sasl_result, State#state{from_pid=undefined}};
+        {failure, Reason} ->
+	    {stop, {error, Reason}, State}
+    end.
 
 %% Reason comes from streamerror macro
 wait_for_legacy_auth_method(?iq_no_attrs, State = #state{connection = Module,
@@ -621,26 +719,41 @@ logged_in(_Packet, State) ->
 connect(Module, Params, From, State) ->
     Domain = get_domain(State#state.auth_method),
     connect(Module, Params, Domain, From, State).
-connect(Module, Params, Domain, From, #state{client_pid=ClientPid} = State) ->
+connect(Module, Params, Domain, From, #state{client_pid=ClientPid, auth_method=Auth} = State) ->
     try start_parser() of
 	StreamRef ->
 	    try Module:connect(ClientPid, StreamRef, Params) of
 		{ConnRef, ReceiverRef} ->
 		    %% basic (legacy) authent: we do not use version
 		    %% 1.0 in stream:
-		    ok = Module:send(ConnRef,
+                    case get_auth_type(Auth) of
+                        sasl ->
+                            ok = Module:send(ConnRef,
+                                             exmpp_stream:opening(Domain,
+                                                                  ?NS_JABBER_CLIENT,
+                                                                  {1,0})),
+                            {next_state, wait_for_stream_features,
+                             State#state{domain = Domain,
+                                         connection = Module,
+                                         connection_ref = ConnRef,
+                                         stream_ref = StreamRef,
+                                         receiver_ref = ReceiverRef,
+                                         from_pid = From}};
+                        _ ->
+                            ok = Module:send(ConnRef,
 				     exmpp_stream:opening(Domain,
 							  ?NS_JABBER_CLIENT,
 							  {0,0})),
-		    %% TODO: Add timeout on wait_for_stream to return
-		    %% meaningfull error.
-		    {next_state, wait_for_stream,
-		     State#state{domain = Domain,
-				 connection = Module,
-				 connection_ref = ConnRef,
-				 stream_ref = StreamRef,
-				 receiver_ref = ReceiverRef,
-				 from_pid = From}}
+                            %% TODO: Add timeout on wait_for_stream to return
+                            %% meaningfull error.
+                            {next_state, wait_for_stream,
+                             State#state{domain = Domain,
+                                         connection = Module,
+                                         connection_ref = ConnRef,
+                                         stream_ref = StreamRef,
+                                         receiver_ref = ReceiverRef,
+                                         from_pid = From}}
+                    end
 	    catch
 		Error ->
 		    exmpp_xmlstream:stop(StreamRef),
@@ -676,17 +789,28 @@ do_auth(digest, _ConnRef, _Module, _Username, _Password, _Resource, StreamId)
 
 %% Extraction functions
 
+get_auth_type({Type, _Method, _JID, _Password}) ->
+    Type.
+
 %% Extract domain from Auth Method
+%% TODO: probably no good reason to keep 2 fun
 get_domain({basic, _Method, JID, _Password}) when ?IS_JID(JID) ->
+    exmpp_jid:domain_as_list(JID);
+get_domain({sasl, _Method, JID, _Password}) when ?IS_JID(JID) ->
     exmpp_jid:domain_as_list(JID).
-get_username({basic, _Method, JID, _Password}) when ?IS_JID(JID) ->
+
+get_username({_Type, _Method, JID, _Password}) when ?IS_JID(JID) ->
     exmpp_jid:node_as_list(JID).
 get_resource({basic, _Method, JID, _Password}) when ?IS_JID(JID) ->
     exmpp_jid:resource_as_list(JID).
-get_password({basic, _Method, _JID, Password}) when is_list(Password) ->
+get_password({_Type, _Method, _JID, Password}) when is_list(Password) ->
     Password.
+
 get_method({basic, Method, _JID, _Password}) when is_atom(Method) ->
     Method.
+
+get_sasl_mecanism({sasl, digest_md5, _JID, _Password}) ->
+    "DIGEST-MD5".
 
 %% Parsing functions
 
