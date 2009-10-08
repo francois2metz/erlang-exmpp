@@ -225,7 +225,8 @@ session_creation(URL, Domain) ->
 		  {to, Domain},
 		  {ver, ?VERSION},
 		  {wait, ?WAIT},
-		  {rid, integer_to_list(RID)}]),
+		  {rid, integer_to_list(RID)},
+		  {?NS_XBOSH, version, '1.0'}]),
     %% TODO: extract port from URL ?
     case http:request(post, {URL, [], [],
 			     exmpp_xml:document_to_binary(PostBody)}, [], []) of
