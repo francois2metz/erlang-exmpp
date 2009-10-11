@@ -65,13 +65,13 @@
 %% States
 -export([setup/3, wait_for_stream/2, wait_for_stream/3,
 	 wait_for_stream_features/2, wait_for_stream_features/3,
-	 stream_opened_features/2,
+	 stream_opened_features/2, stream_opened_features/3,
 	 stream_opened/2, stream_opened/3,
 	 stream_error/2, stream_error/3,
 	 stream_closed/2, stream_closed/3,
 	 wait_for_legacy_auth_method/2,
 	 wait_for_sasl_challenge/2, wait_for_sasl_result/2, 
-	 wait_for_sasl_result2/2,
+	 wait_for_sasl_result2/2, stream_restart/2, stream_to_bind/2, stream_bind_result/2,
 	 wait_for_auth_result/2,
 	 wait_for_register_result/2,
 	 logged_in/2, logged_in/3
@@ -399,6 +399,12 @@ setup(_UnknownMessage, _From, State) ->
 	#xmlstreamstart{element=#xmlel{
 			  ns=?NS_XMPP,
 			  name=stream}}).
+
+-define(streamrestart,
+	#xmlstreamelement{element=#xmlel{
+			  ns=?NS_XMPP,
+			  name=stream} = Stream}).
+
 -define(streamfeatures,
        #xmlstreamelement{
          element=#xmlel{ns=?NS_XMPP, name=features} = Features}).
@@ -483,6 +489,9 @@ wait_for_stream_features(Start = ?stream, State = #state{connection = _Module,
     {next_state, stream_opened_features, State#state{from_pid=undefined,
                                                      stream_id = StreamId}}.
 
+stream_opened_features(_Event, _From, State) ->
+    {reply, {error, error_opened_features}, stream_opened_features, State}.
+
 stream_opened_features(?streamfeatures, State = #state{connection = _Module,
                                                 connection_ref = _ConnRef,
                                                 from_pid = From}) ->
@@ -495,7 +504,7 @@ stream_opened_features(?streamfeatures, State = #state{connection = _Module,
 
 %% Supported user commands at this stage:
 %% login and register
-stream_opened({login}, _From,State=#state{auth_method=undefined}) ->
+stream_opened({login}, _From, State=#state{auth_method=undefined}) ->
     {reply, {error, auth_method_undefined}, stream_opened, State};
 stream_opened({login}, From, State=#state{connection = Module,
 					  connection_ref = ConnRef,
@@ -588,8 +597,8 @@ wait_for_sasl_challenge(?saslexchange, State = #state{connection = Module,
             Domain = get_domain(Auth),
             Username = get_username(Auth),
             Password = get_password(Auth),
-            Module:send(ConnRef, exmpp_client_sasl:sasl_step2(Data, Username, Domain, Password)),
-            {next_state, wait_for_sasl_result, State#state{from_pid=undefined}};
+            ok = Module:send(ConnRef, exmpp_client_sasl:sasl_step2(Data, Username, Domain, Password)),
+            {next_state, wait_for_sasl_result, State};
         {failure, Reason} ->
 	    {stop, {error, Reason}, State}
     end.
@@ -604,19 +613,53 @@ wait_for_sasl_result(?saslexchange, State = #state{connection = Module,
             Username = get_username(Auth),
             Password = get_password(Auth),
             Module:send(ConnRef, exmpp_client_sasl:sasl_step3(Data, Username, Domain, Password)),
-            {next_state, wait_for_sasl_result2, State#state{from_pid=undefined}};
+            {next_state, wait_for_sasl_result2, State};
         {failure, Reason} ->
 	    {stop, {error, Reason}, State}
     end.
 
 wait_for_sasl_result2(?saslexchange, State = #state{connection = Module,
-                                                    connection_ref = ConnRef}) ->
+                                                    connection_ref = ConnRef,
+                                                    stream_ref = StreamRef,
+                                                    auth_method = Auth}) ->
     case exmpp_client_sasl:next_step(SaslPacket) of 
-        {success, Data} ->
-
-            {next_state, wait_for_sasl_result, State#state{from_pid=undefined}};
+        {success, _Data} ->
+            Domain = get_domain(Auth),
+            exmpp_xmlstream:reset(StreamRef),
+            ok = Module:send(ConnRef,
+                             exmpp_stream:opening(Domain,
+                                                  ?NS_JABBER_CLIENT,
+                                                  {1,0})),
+            {next_state, stream_restart, State};
         {failure, Reason} ->
 	    {stop, {error, Reason}, State}
+    end.
+
+stream_restart(?streamrestart, State) ->
+    {next_state, stream_to_bind, State}.
+
+stream_to_bind(?streamfeatures, State = #state{connection = Module,
+                                               connection_ref = ConnRef,
+                                               from_pid = From,
+                                               auth_method = Auth}) ->
+    case exmpp_client_binding:announced_support(Features) of
+        true ->
+            Resource = get_resource(Auth),
+            ok = Module:send(ConnRef,
+                             exmpp_client_binding:bind(Resource)),
+            {next_state, stream_bind_result, State};
+        false -> ok
+    end.
+
+stream_bind_result(?iq_no_attrs, State = #state{from_pid=From}) ->
+    case exmpp_xml:get_attribute_as_binary(IQElement, type, undefined) of
+ 	<<"result">> ->
+            gen_fsm:reply(From, ok),
+            {next_state, logged_in, State#state{from_pid=undefined}};
+	<<"error">> ->
+            Reason = exmpp_stanza:get_condition(IQElement),
+            gen_fsm:reply(From, {auth_error, Reason}),
+            {next_state, stream_opened, State#state{from_pid=undefined}}
     end.
 
 %% Reason comes from streamerror macro
@@ -801,7 +844,7 @@ get_domain({sasl, _Method, JID, _Password}) when ?IS_JID(JID) ->
 
 get_username({_Type, _Method, JID, _Password}) when ?IS_JID(JID) ->
     exmpp_jid:node_as_list(JID).
-get_resource({basic, _Method, JID, _Password}) when ?IS_JID(JID) ->
+get_resource({_Type, _Method, JID, _Password}) when ?IS_JID(JID) ->
     exmpp_jid:resource_as_list(JID).
 get_password({_Type, _Method, _JID, Password}) when is_list(Password) ->
     Password.
@@ -919,7 +962,7 @@ send_packet(?iqattrs, Module, ConnRef) ->
 	<<"set">> ->
 	    {Attrs2, PacketId} = check_id(Attrs),
 	    Module:send(ConnRef, IQElement#xmlel{attrs=Attrs2}),
-	    PacketId;
+	    PacketId;	
 	<<"get">> ->
 	    {Attrs2, PacketId} = check_id(Attrs),
 	    Module:send(ConnRef, IQElement#xmlel{attrs=Attrs2}),
