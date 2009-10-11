@@ -403,7 +403,7 @@ setup(_UnknownMessage, _From, State) ->
 -define(streamrestart,
 	#xmlstreamelement{element=#xmlel{
 			  ns=?NS_XMPP,
-			  name=stream} = Stream}).
+			  name=stream}}).
 
 -define(streamfeatures,
        #xmlstreamelement{
@@ -640,7 +640,6 @@ stream_restart(?streamrestart, State) ->
 
 stream_to_bind(?streamfeatures, State = #state{connection = Module,
                                                connection_ref = ConnRef,
-                                               from_pid = From,
                                                auth_method = Auth}) ->
     case exmpp_client_binding:announced_support(Features) of
         true ->
