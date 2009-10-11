@@ -166,8 +166,7 @@ sasl_step2(ChallengeData, Username, Domain, Password) ->
     Cnonce = integer_to_list(random:uniform(65536 * 65536)),
     Digest = "xmpp/"++ Domain,
     crypto:start(),
-    %% TODO: replace localhost
-    Response_Data = encode(Username, Password, "localhost", Nonce, Cnonce, Digest, "00000001", Qop),
+    Response_Data = encode(Username, Password, Domain, Nonce, Cnonce, Digest, "00000001", Qop),
     response(Response_Data).
 
 %% TODO: use Nc and Qop
