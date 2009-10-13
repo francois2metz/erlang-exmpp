@@ -24,7 +24,7 @@
 -module(exmpp_tcp).
 
 %% Behaviour exmpp_gen_transport ?
--export([connect/3, send/2, close/2]).
+-export([connect/3, send/2, close/2, starttls/1]).
 
 %% Internal export
 -export([receiver/3]).
@@ -77,6 +77,11 @@ send(Socket, XMLPacket) ->
 	ok -> ok;
 	{error, Reason} -> {error, Reason}
     end.
+
+starttls(Socket)  when is_port(Socket) ->
+    DefaultOptions = [{verify,0}],
+    {ok, SSL} = ssl:connect(Socket, DefaultOptions).
+
 
 %%--------------------------------------------------------------------
 %% Internal functions

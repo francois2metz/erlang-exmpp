@@ -65,7 +65,8 @@
 %% States
 -export([setup/3, wait_for_stream/2, wait_for_stream/3,
 	 wait_for_stream_features/2, wait_for_stream_features/3,
-	 stream_opened_features/2, stream_opened_features/3,
+	 stream_opened_features/2,
+         wait_for_starttls/2,
 	 stream_opened/2, stream_opened/3,
 	 stream_error/2, stream_error/3,
 	 stream_closed/2, stream_closed/3,
@@ -435,6 +436,13 @@ setup(_UnknownMessage, _From, State) ->
         #xmlstreamelement{
 	  element=#xmlel{ns=?NS_SASL} = SaslPacket}).
 
+%% Standard tls proceed
+-define(tls_proceed,
+        #xmlstreamelement{element=#xmlel{
+                         ns=?NS_TLS,
+                         name=proceed}}).
+
+
 %% Extract IQElement from IQ
 -define(iq,
 	#xmlstreamelement{
@@ -479,25 +487,35 @@ wait_for_stream_features(_Event, _From, State) ->
 
 %% TODO: Check that we receive a client stream. Need change in the
 %% parsing library.
-wait_for_stream_features(Start = ?stream, State = #state{connection = _Module,
-						connection_ref = _ConnRef,
-						auth_method = _Auth,
-						from_pid = From}) ->
-    %% Get StreamID
+wait_for_stream_features(Start = ?stream, State) ->
     StreamId = exmpp_xml:get_attribute_as_list(Start#xmlstreamstart.element, id, ""),
-    gen_fsm:reply(From, StreamId),
-    {next_state, stream_opened_features, State#state{from_pid=undefined,
-                                                     stream_id = StreamId}}.
+    {next_state, stream_opened_features, State#state{stream_id = StreamId}}.
 
-stream_opened_features(_Event, _From, State) ->
-    {reply, {error, error_opened_features}, stream_opened_features, State}.
+stream_opened_features(?streamfeatures, State = #state{connection = Module,
+                                                       connection_ref = ConnRef,
+                                                       from_pid = From}) ->
+    %% TODO: exmpp_client_tls:announced_support can throw exception
+    case exmpp_client_tls:announced_support(Features) of 
+        none ->
+            %% TODO: check if selected mecanism is available
+            _M = exmpp_client_sasl:announced_mechanisms(Features),
+            gen_fsm:reply(From, ok),
+            {next_state, stream_opened, State#state{from_pid=undefined}};
+        optional ->
+            Module:send(ConnRef, exmpp_client_tls:starttls()),
+            {next_state, wait_for_starttls, State};
+        required ->
+            Module:send(ConnRef, exmpp_client_tls:starttls()),
+            {next_state, wait_for_starttls, State}
+    end.
 
-stream_opened_features(?streamfeatures, State = #state{connection = _Module,
-                                                connection_ref = _ConnRef,
-                                                from_pid = From}) ->
-    _M = exmpp_client_sasl:announced_mechanisms(Features),
-    %% TODO: check if selected mecanism is available
-    {next_state, stream_opened, State#state{from_pid=From}}.
+wait_for_starttls(?tls_proceed, State=#state{connection = Module,
+                                             connection_ref = ConnRef,
+                                             from_pid = From}) ->
+    %% TLS Negociation
+    Module:starttls(ConnRef),
+    gen_fsm:reply(From, ok),
+    {next_state, stream_opened, State#state{from_pid=undefined}}.
 
 %% ---------------------------
 %% Between stream opening and session opening
@@ -766,9 +784,8 @@ connect(Module, Params, Domain, From, #state{client_pid=ClientPid, auth_method=A
 	StreamRef ->
 	    try Module:connect(ClientPid, StreamRef, Params) of
 		{ConnRef, ReceiverRef} ->
-		    %% basic (legacy) authent: we do not use version
-		    %% 1.0 in stream:
                     case get_auth_type(Auth) of
+                        %% sasl authent: we use version 1.0 in stream
                         sasl ->
                             ok = Module:send(ConnRef,
                                              exmpp_stream:opening(Domain,
@@ -781,6 +798,8 @@ connect(Module, Params, Domain, From, #state{client_pid=ClientPid, auth_method=A
                                          stream_ref = StreamRef,
                                          receiver_ref = ReceiverRef,
                                          from_pid = From}};
+                        %% basic (legacy) authent: we do not use version
+                        %% 1.0 in stream:
                         _ ->
                             ok = Module:send(ConnRef,
 				     exmpp_stream:opening(Domain,
