@@ -510,12 +510,29 @@ stream_opened_features(?streamfeatures, State = #state{connection = Module,
     end.
 
 wait_for_starttls(?tls_proceed, State=#state{connection = Module,
+                                             domain = Domain,
                                              connection_ref = ConnRef,
+                                             stream_ref = StreamRef,
+                                             receiver_ref = ReceiverRef,
                                              from_pid = From}) ->
-    %% TLS Negociation
-    Module:starttls(ConnRef),
-    gen_fsm:reply(From, ok),
-    {next_state, stream_opened, State#state{from_pid=undefined}}.
+    exmpp_xml:stop_parser(exmpp_xmlstream:get_parser(StreamRef)),
+    try start_parser() of
+        NewStreamRef ->
+            %% TLS Negociation
+            NewConnRef = Module:starttls(ConnRef, ReceiverRef, NewStreamRef),
+            ok = Module:send(NewConnRef,
+                             exmpp_stream:opening(Domain,
+                                                  ?NS_JABBER_CLIENT,
+                                                  {1,0})),
+            {next_state, wait_for_stream_features, State#state{connection_ref=NewConnRef,
+                                                              stream_ref = NewStreamRef}}
+    catch
+        Error ->
+            {reply, Error, setup, State}
+    end.
+    %%connect(Module, Params, Domain, From, State).
+    %%gen_fsm:reply(From, ok),
+    %%{next_state, wait_for_stream_features, State#state{from_pid=undefined}}.
 
 %% ---------------------------
 %% Between stream opening and session opening

@@ -23,11 +23,19 @@
 
 -module(exmpp_tcp).
 
+-include("exmpp.hrl").
+
 %% Behaviour exmpp_gen_transport ?
--export([connect/3, send/2, close/2, starttls/1]).
+-export([connect/3, send/2, close/2, starttls/3]).
 
 %% Internal export
 -export([receiver/3]).
+
+-record(tls_socket, {
+	  socket,
+	  packet_mode = binary,
+	  port
+	 }).
 
 %% Connect to XMPP server
 %% Returns:
@@ -70,18 +78,36 @@ close(Socket, ReceiverPid) ->
     ReceiverPid ! stop,
     gen_tcp:close(Socket).
 
-send(Socket, XMLPacket) ->
+send(Socket, XMLPacket) when is_record(Socket, tls_socket)  ->
     %% TODO: document_to_binary to reduce memory consumption
     String = exmpp_xml:document_to_list(XMLPacket),
+    send_tls(Socket, String);
+
+send(Socket, XMLPacket) when is_record(XMLPacket, xmlel) ->
+    %% TODO: document_to_binary to reduce memory consumption
+    String = exmpp_xml:document_to_list(XMLPacket),
+    send(Socket, String);
+
+send(Socket, BPacket) when is_binary(BPacket) ->
+    send(Socket, binary_to_list(BPacket));
+
+send(Socket, String) ->
     case gen_tcp:send(Socket, String) of
+	ok -> ok;
+	{error, Reason} -> 
+            {error, Reason}
+    end.
+
+send_tls(Socket, String) ->
+    case exmpp_tls:send(Socket, String) of
 	ok -> ok;
 	{error, Reason} -> {error, Reason}
     end.
 
-starttls(Socket)  when is_port(Socket) ->
-    DefaultOptions = [{verify,0}],
-    {ok, SSL} = ssl:connect(Socket, DefaultOptions).
-
+starttls(Socket, ReceiverPid, StreamRef) when is_port(Socket) ->
+    Ret = {tls_socket, _, _, _} = exmpp_tls:connect({gen_tcp, Socket}, undefined, false, [{engine, openssl}]),
+    ReceiverPid ! {tls, Ret, StreamRef},
+    Ret.
 
 %%--------------------------------------------------------------------
 %% Internal functions
@@ -95,6 +121,8 @@ receiver_loop(ClientPid, Socket, StreamRef) ->
 	    inet:setopts(Socket, [{active, once}]),
 	    Pid ! {Ref, ok},
 	    receiver_loop(ClientPid, Socket, StreamRef);
+        {tls, SocketDesc, StreamRef2} ->
+            receiver_loop_tls(ClientPid, SocketDesc, StreamRef2);
 	stop ->
 	    ok;
 	{tcp, Socket, Data} ->
@@ -102,6 +130,20 @@ receiver_loop(ClientPid, Socket, StreamRef) ->
 	    {ok, NewStreamRef} = exmpp_xmlstream:parse(StreamRef, Data),
 	    receiver_loop(ClientPid, Socket, NewStreamRef);
 	{tcp_closed, Socket} ->
+	    %% XXX why timeouts with timeout 10 seconds with quickchek tests ???
+	    gen_fsm:sync_send_all_state_event(ClientPid, tcp_closed, 20000)
+    end.
+
+receiver_loop_tls(ClientPid, SocketDesc, StreamRef) ->
+    receive
+	stop ->
+	    ok;
+	{tcp, Socket, Data} ->
+	    inet:setopts(Socket, [{active, once}]),
+            {ok, Data2} = exmpp_tls:recv_data(SocketDesc, Data),
+            {ok, NewStreamRef} = exmpp_xmlstream:parse(StreamRef, Data2),
+            receiver_loop_tls(ClientPid, SocketDesc, NewStreamRef);
+	{tcp_closed, _Socket} ->
 	    %% XXX why timeouts with timeout 10 seconds with quickchek tests ???
 	    gen_fsm:sync_send_all_state_event(ClientPid, tcp_closed, 20000)
     end.
