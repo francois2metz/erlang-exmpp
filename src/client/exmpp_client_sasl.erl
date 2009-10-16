@@ -36,10 +36,12 @@
 	 selected_mechanism/2,
 	 decode_challenge/1,
 	 sasl_step2/4,
+	 sasl_step2/5,
 	 sasl_step3/4,
 	 response/1,
 	 abort/0,
-	 next_step/1
+	 next_step/1,
+	 plain/3
 	]).
 
 %% --------------------------------------------------------------------
@@ -63,7 +65,6 @@ announced_mechanisms2(#xmlel{children = []} = Feature) ->
     throw({sasl, announced_mechanisms, invalid_feature, Feature});
 announced_mechanisms2(#xmlel{children = Children}) ->
     announced_mechanisms3(Children, []).
-
 
 announced_mechanisms3(
   [#xmlel{ns = ?NS_SASL, name = 'mechanism'} = El | Rest], Result) ->
@@ -163,11 +164,17 @@ decode_challenge(Data) ->
     
 %% TODO: save Nonce and Cnonce
 sasl_step2(ChallengeData, Username, Domain, Password) ->
+	sasl_step2(ChallengeData, Username, Domain, Password, digest_md5).
+
+sasl_step2(ChallengeData, Username, Domain, Password, SaslDigest) ->
     {Nonce, Qop, _Charset, _Algorithm} = decode_challenge(ChallengeData),
     Cnonce = integer_to_list(random:uniform(65536 * 65536)),
     Digest = "xmpp/"++ Domain,
-    crypto:start(),
-    Response_Data = encode(Username, Password, Domain, Nonce, Cnonce, Digest, "00000001", Qop),
+	Response_Data = case SaslDigest of
+						digest_md5 -> crypto:start(),
+									  encode(Username, Password, Domain, Nonce, Cnonce, Digest, "00000001", Qop);
+						_ -> plain(Username, Password, Domain)
+					end,
     response(Response_Data).
 
 %% TODO: use Nc and Qop
@@ -188,7 +195,10 @@ encode(Username, Password, Realm, Nonce, Cnonce, Digest, _Nc, _Qop) ->
         "response=\"" ++ Response2 ++ "\"," ++
         "charset=\"utf-8\"".
 
-%% TODO: Check Challenge data
+plain(Username, Password, _Domain) ->
+	"\000"++Username++"\000"++Password.
+
+%%
 sasl_step3(_ChallengeData, _Username, _Domain, _Password) ->
     #xmlel{
             ns = ?NS_SASL,
