@@ -532,6 +532,29 @@ stream_opened_features(?streamfeatures, State = #state{connection = Module,
             {next_state, stream_opened, State#state{from_pid=undefined}}
     end.
 
+
+%% Starttls
+wait_for_starttls(?tls_proceed, State=#state{connection = Module,
+                                             domain = Domain,
+                                             connection_ref = ConnRef,
+                                             stream_ref = StreamRef,
+                                             receiver_ref = ReceiverRef}) ->
+    exmpp_xml:stop_parser(exmpp_xmlstream:get_parser(StreamRef)),
+    try start_parser() of
+        NewStreamRef ->
+            %% TLS Negociation
+            NewConnRef = Module:starttls(ConnRef, ReceiverRef, NewStreamRef),
+            ok = Module:send(NewConnRef,
+                             exmpp_stream:opening(Domain,
+                                                  ?NS_JABBER_CLIENT,
+                                                  {1,0})),
+            {next_state, wait_for_stream_features, State#state{connection_ref=NewConnRef,
+                                                              stream_ref = NewStreamRef}}
+    catch
+        Error ->
+            {reply, Error, setup, State}
+    end.
+
 %% ---------------------------
 %% Between stream opening and session opening
 
@@ -629,28 +652,6 @@ stream_closed(_Signal, _From, State) ->
 stream_closed(_Signal, State) ->
     {next_state, stream_closed, State}.
 
-%% Starttls
-wait_for_starttls(?tls_proceed, State=#state{connection = Module,
-                                             domain = Domain,
-                                             connection_ref = ConnRef,
-                                             stream_ref = StreamRef,
-                                             receiver_ref = ReceiverRef}) ->
-    exmpp_xml:stop_parser(exmpp_xmlstream:get_parser(StreamRef)),
-    try start_parser() of
-        NewStreamRef ->
-            %% TLS Negociation
-            NewConnRef = Module:starttls(ConnRef, ReceiverRef, NewStreamRef),
-            ok = Module:send(NewConnRef,
-                             exmpp_stream:opening(Domain,
-                                                  ?NS_JABBER_CLIENT,
-                                                  {1,0})),
-            {next_state, wait_for_stream_features, State#state{connection_ref=NewConnRef,
-                                                              stream_ref = NewStreamRef}}
-    catch
-        Error ->
-            {reply, Error, setup, State}
-    end.
-
 %% SASL
 %% TODO: test auth type
 wait_for_sasl_challenge(?saslexchange, State = #state{connection = Module,
@@ -683,9 +684,6 @@ wait_for_sasl_result(?saslexchange, State = #state{connection = Module,
 	    {stop, {error, Reason}, State}
     end.
 
-wait_for_sasl_result3(?saslexchange_successed, State) ->
-	restart_stream(State).
-
 wait_for_sasl_result2(?saslexchange, State = #state{}) ->
     case exmpp_client_sasl:next_step(SaslPacket) of
         {success, _Data} ->
@@ -694,11 +692,14 @@ wait_for_sasl_result2(?saslexchange, State = #state{}) ->
             {stop, {error, Reason}, State}
     end.
 
+wait_for_sasl_result3(?saslexchange_successed, State) ->
+	restart_stream(State).
+
 restart_stream(State = #state{connection = Module, 
-							  connection_ref = ConnRef, 
-							  stream_ref = StreamRef, 
-							  auth_method = Auth}) ->
-	Domain = get_domain(Auth),
+                              connection_ref = ConnRef, 
+                              stream_ref = StreamRef, 
+                              auth_method = Auth}) ->
+    Domain = get_domain(Auth),
     exmpp_xmlstream:reset(StreamRef),
     ok = Module:send(ConnRef,
                              exmpp_stream:opening(Domain,
