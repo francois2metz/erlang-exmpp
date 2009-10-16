@@ -36,7 +36,6 @@
 	 selected_mechanism/2,
 	 decode_challenge/1,
 	 sasl_step2/4,
-	 sasl_step2/5,
 	 sasl_step3/4,
 	 response/1,
 	 abort/0,
@@ -164,17 +163,11 @@ decode_challenge(Data) ->
     
 %% TODO: save Nonce and Cnonce
 sasl_step2(ChallengeData, Username, Domain, Password) ->
-	sasl_step2(ChallengeData, Username, Domain, Password, digest_md5).
-
-sasl_step2(ChallengeData, Username, Domain, Password, SaslDigest) ->
     {Nonce, Qop, _Charset, _Algorithm} = decode_challenge(ChallengeData),
     Cnonce = integer_to_list(random:uniform(65536 * 65536)),
     Digest = "xmpp/"++ Domain,
-	Response_Data = case SaslDigest of
-						digest_md5 -> crypto:start(),
-									  encode(Username, Password, Domain, Nonce, Cnonce, Digest, "00000001", Qop);
-						_ -> plain(Username, Password, Domain)
-					end,
+    crypto:start(),
+    Response_Data = encode(Username, Password, Domain, Nonce, Cnonce, Digest, "00000001", Qop),
     response(Response_Data).
 
 %% TODO: use Nc and Qop

@@ -93,15 +93,9 @@
 	  stream_id = false, %% XMPP StreamID (Used for digest_auth)
 	  stream_error,
 	  receiver_ref,
-          sasl = [{cnonce, ""}, {nonce, ""}], %% used for sals auth
+          sasl = [{cnonce, ""}, {nonce, ""}], %% used for sasl auth
 	  from_pid           %% Use by gen_fsm to handle postponed replies
 	 }).
-
--record(sasl, { 
-					  auth_digest,
-					  auth_jid,
-					  auth_pwd
-					 }).
 
 %% This timeout should match the connect timeout
 -define(TIMEOUT, 5000).
@@ -461,8 +455,8 @@ setup(_UnknownMessage, _From, State) ->
 %% Standard tls proceed
 -define(tls_proceed,
 	#xmlstreamelement{element=#xmlel{
-			  ns=?NS_TLS,
-			  name=proceed}}).
+                            ns=?NS_TLS,
+                            name=proceed}}).
 
 %% Extract IQElement from IQ
 -define(iq,
@@ -532,8 +526,6 @@ stream_opened_features(?streamfeatures, State = #state{connection = Module,
             {next_state, stream_opened, State#state{from_pid=undefined}}
     end.
 
-
-%% Starttls
 wait_for_starttls(?tls_proceed, State=#state{connection = Module,
                                              domain = Domain,
                                              connection_ref = ConnRef,
@@ -549,7 +541,7 @@ wait_for_starttls(?tls_proceed, State=#state{connection = Module,
                                                   ?NS_JABBER_CLIENT,
                                                   {1,0})),
             {next_state, wait_for_stream_features, State#state{connection_ref=NewConnRef,
-                                                              stream_ref = NewStreamRef}}
+                                                               stream_ref=NewStreamRef}}
     catch
         Error ->
             {reply, Error, setup, State}
@@ -653,7 +645,6 @@ stream_closed(_Signal, State) ->
     {next_state, stream_closed, State}.
 
 %% SASL
-%% TODO: test auth type
 wait_for_sasl_challenge(?saslexchange, State = #state{connection = Module,
                                                        connection_ref = ConnRef,
                                                        auth_method = Auth}) ->
@@ -662,9 +653,8 @@ wait_for_sasl_challenge(?saslexchange, State = #state{connection = Module,
             Domain = get_domain(Auth),
             Username = get_username(Auth),
             Password = get_password(Auth),
-			Digest = Auth#sasl.auth_digest,
-            Module:send(ConnRef, exmpp_client_sasl:sasl_step2(Data, Username, Domain, Password, Digest)),
-            {next_state, wait_for_sasl_result, State#state{from_pid=undefined}};
+            Module:send(ConnRef, exmpp_client_sasl:sasl_step2(Data, Username, Domain, Password)),
+            {next_state, wait_for_sasl_result, State};
         {failure, Reason} ->
 	    {stop, {error, Reason}, State}
     end.
@@ -679,7 +669,7 @@ wait_for_sasl_result(?saslexchange, State = #state{connection = Module,
             Username = get_username(Auth),
             Password = get_password(Auth),
             Module:send(ConnRef, exmpp_client_sasl:sasl_step3(Data, Username, Domain, Password)),
-            {next_state, wait_for_sasl_result2, State#state{from_pid=undefined}};
+            {next_state, wait_for_sasl_result2, State};
         {failure, Reason} ->
 	    {stop, {error, Reason}, State}
     end.
@@ -839,23 +829,23 @@ connect(Module, Params, Domain, From, #state{client_pid=ClientPid, auth_method=A
 	    try Module:connect(ClientPid, StreamRef, Params) of
 		{ConnRef, ReceiverRef} ->
                     {Version, NextState} = case get_auth_type(Auth) of
-											   sasl ->
-												   {{1,0}, wait_for_stream_features};
-											   %% basic (legacy) authent: we do not use version
-											   %% 1.0 in stream:
-											   _ ->
-												   {{0,0}, wait_for_stream}
-										   end,
-					StreamEl = exmpp_stream:opening(Domain, ?NS_JABBER_CLIENT, Version),
-					ok = Module:send(ConnRef, StreamEl),
-					%% TODO: Add timeout on wait_for_stream to return
-					%% meaningfull error.
+                                               sasl ->
+                                                   {{1,0}, wait_for_stream_features};
+                                               %% basic (legacy) authent: we do not use version
+                                               %% 1.0 in stream:
+                                               _ ->
+                                                   {{0,0}, wait_for_stream}
+                                           end,
+                    StreamEl = exmpp_stream:opening(Domain, ?NS_JABBER_CLIENT, Version),
+                    ok = Module:send(ConnRef, StreamEl),
+                    %% TODO: Add timeout on wait_for_stream to return
+                    %% meaningfull error.
                     {next_state, NextState, State#state{domain = Domain,
-														connection = Module,
-														connection_ref = ConnRef,
-														stream_ref = StreamRef,
-														receiver_ref = ReceiverRef,
-														from_pid = From}}
+                                                        connection = Module,
+                                                        connection_ref = ConnRef,
+                                                        stream_ref = StreamRef,
+                                                        receiver_ref = ReceiverRef,
+                                                        from_pid = From}}
 	    catch
 		Error ->
 		    exmpp_xmlstream:stop(StreamRef),
