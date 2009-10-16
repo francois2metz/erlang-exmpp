@@ -860,36 +860,24 @@ connect(Module, Params, Domain, From, #state{client_pid=ClientPid, auth_method=A
 	StreamRef ->
 	    try Module:connect(ClientPid, StreamRef, Params) of
 		{ConnRef, ReceiverRef} ->
-		    %% basic (legacy) authent: we do not use version
-		    %% 1.0 in stream:
-                    case get_auth_type(Auth) of
-                        sasl ->
-                            ok = Module:send(ConnRef,
-                                             exmpp_stream:opening(Domain,
-                                                                  ?NS_JABBER_CLIENT,
-                                                                  {1,0})),
-                            {next_state, wait_for_stream_features,
-                             State#state{domain = Domain,
-                                         connection = Module,
-                                         connection_ref = ConnRef,
-                                         stream_ref = StreamRef,
-                                         receiver_ref = ReceiverRef,
-                                         from_pid = From}};
-                        _ ->
-                            ok = Module:send(ConnRef,
-				     exmpp_stream:opening(Domain,
-							  ?NS_JABBER_CLIENT,
-							  {0,0})),
-                            %% TODO: Add timeout on wait_for_stream to return
-                            %% meaningfull error.
-                            {next_state, wait_for_stream,
-                             State#state{domain = Domain,
-                                         connection = Module,
-                                         connection_ref = ConnRef,
-                                         stream_ref = StreamRef,
-                                         receiver_ref = ReceiverRef,
-                                         from_pid = From}}
-                    end
+                    {Version, NextState} = case get_auth_type(Auth) of
+											   sasl ->
+												   {{1,0}, wait_for_stream_features};
+											   %% basic (legacy) authent: we do not use version
+											   %% 1.0 in stream:
+											   _ ->
+												   {{0,0}, wait_for_stream}
+										   end,
+					StreamEl = exmpp_stream:opening(Domain, ?NS_JABBER_CLIENT, Version),
+					ok = Module:send(ConnRef, StreamEl),
+					%% TODO: Add timeout on wait_for_stream to return
+					%% meaningfull error.
+                    {next_state, NextState, State#state{domain = Domain,
+														connection = Module,
+														connection_ref = ConnRef,
+														stream_ref = StreamRef,
+														receiver_ref = ReceiverRef,
+														from_pid = From}}
 	    catch
 		Error ->
 		    exmpp_xmlstream:stop(StreamRef),
