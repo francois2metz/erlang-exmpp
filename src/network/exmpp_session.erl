@@ -510,7 +510,6 @@ wait_for_stream_features(_Event, _From, State) ->
 %% parsing library.
 wait_for_stream_features(Start = ?stream, State) ->
     %% Get StreamID
-	io:format("wait_for_stream_features~n", []),
     StreamId = exmpp_xml:get_attribute_as_list(Start#xmlstreamstart.element, id, ""),
     {next_state, stream_opened_features, State#state{stream_id = StreamId}}.
 
@@ -519,19 +518,18 @@ stream_opened_features(?streamfeatures, State = #state{connection = Module,
                                                        connection_ref = ConnRef,
                                                        from_pid = From}) ->
     %% TODO: exmpp_client_tls:announced_support can throw exception
-	Announced = exmpp_client_tls:announced_support(Features),
-    case Announced of
-        none ->
-            %% TODO: check if selected mecanism is available
-            _M = exmpp_client_sasl:announced_mechanisms(Features),
-            gen_fsm:reply(From, ok),
-            {next_state, stream_opened, State#state{from_pid=undefined}};
+    case exmpp_client_tls:announced_support(Features) of
         optional ->
             Module:send(ConnRef, exmpp_client_tls:starttls()),
             {next_state, wait_for_starttls, State};
         required ->
             Module:send(ConnRef, exmpp_client_tls:starttls()),
-            {next_state, wait_for_starttls, State}
+            {next_state, wait_for_starttls, State};
+        _ ->
+            %% TODO: check if selected mecanism is available
+            _M = exmpp_client_sasl:announced_mechanisms(Features),
+            gen_fsm:reply(From, ok),
+            {next_state, stream_opened, State#state{from_pid=undefined}}
     end.
 
 %% ---------------------------
@@ -554,16 +552,17 @@ stream_opened({login}, From, State=#state{connection = Module,
                         exmpp_client_legacy_auth:request_with_user(Domain, Username)),
             {next_state, wait_for_legacy_auth_method, State#state{from_pid=From}};
         sasl ->
-			Mechanism = get_sasl_mecanism(Auth),
-			{NextStep, Data2Send} = case Mechanism of
-				"PLAIN" ->
-					Domain = get_domain(Auth),
-            		Username = get_username(Auth),
-            		Password = get_password(Auth),
-					{wait_for_sasl_result3, exmpp_client_sasl:selected_mechanism(Mechanism, exmpp_client_sasl:plain(Username, Password, Domain))};
-				_ ->
-					{wait_for_sasl_challenge, exmpp_client_sasl:selected_mechanism(Mechanism)}
-			end,
+            Mechanism = get_sasl_mecanism(Auth),
+            {NextStep, Data2Send} = case Mechanism of
+                                        "PLAIN" ->
+                                            Domain = get_domain(Auth),
+                                            Username = get_username(Auth),
+                                            Password = get_password(Auth),
+                                            {wait_for_sasl_result3, exmpp_client_sasl:selected_mechanism(Mechanism, 
+                                                                                                         exmpp_client_sasl:plain(Username, Password, Domain))};
+                                        _ ->
+                                            {wait_for_sasl_challenge, exmpp_client_sasl:selected_mechanism(Mechanism)}
+                                    end,
             Module:send(ConnRef, Data2Send),
             {next_state, NextStep, State#state{from_pid=From}}
     end;
@@ -598,22 +597,6 @@ stream_opened({send_packet, Packet}, _From,
 			     connection_ref = ConnRef}) ->
     Id = send_packet(Packet, Module, ConnRef),
     {reply, Id, stream_opened, State}.
-
-stream_opened(?streamfeatures, State=#state{connection = Module,
-					  connection_ref = ConnRef,
-					  auth_method=Auth}) ->
-	case get_auth_type(Auth) of
-        basic ->
-            Domain = get_domain(Auth),
-            Username = get_username(Auth),
-            Module:send(ConnRef,
-                        exmpp_client_legacy_auth:request_with_user(Domain, Username)),
-            {next_state, wait_for_legacy_auth_method, State};
-        sasl ->
-            Module:send(ConnRef, 
-                        exmpp_client_sasl:selected_mechanism(get_sasl_mecanism(Auth))),
-            {next_state, wait_for_sasl_challenge, State}
-    end;
 %% Process incoming
 %% Dispatch incoming messages
 stream_opened(?message, State = #state{connection = _Module,
@@ -661,12 +644,10 @@ wait_for_starttls(?tls_proceed, State=#state{connection = Module,
                              exmpp_stream:opening(Domain,
                                                   ?NS_JABBER_CLIENT,
                                                   {1,0})),
-			io:format("Tls negociation ended~n", []),
             {next_state, wait_for_stream_features, State#state{connection_ref=NewConnRef,
                                                               stream_ref = NewStreamRef}}
     catch
         Error ->
-			io:format("Error in tls negociation~n", []),
             {reply, Error, setup, State}
     end.
 
@@ -691,7 +672,6 @@ wait_for_sasl_challenge(?saslexchange, State = #state{connection = Module,
 wait_for_sasl_result(?saslexchange, State = #state{connection = Module,
                                                     connection_ref = ConnRef,
                                                     auth_method = Auth}) ->
-	io:format("wait_for_sasl_result", []),
     case exmpp_client_sasl:next_step(SaslPacket) of 
         {challenge, Data} ->
             Domain = get_domain(Auth),
@@ -757,7 +737,6 @@ wait_for_legacy_auth_method(?iq_no_attrs, State = #state{connection = Module,
 							 connection_ref = ConnRef,
 							 auth_method = Auth,
 							 stream_id = StreamId}) ->
-	io:format("wait_for_legacy_auth_method", []),
     Username = get_username(Auth),
     Password = get_password(Auth),
     Resource = get_resource(Auth),
@@ -780,7 +759,6 @@ wait_for_legacy_auth_method(?streamerror, State) ->
 %% TODO: We should be able to match on iq type directly on the first
 %% level record
 wait_for_auth_result(?iq_no_attrs, State = #state{from_pid=From}) ->
-	io:format("wait_for_auth_result", []),
     case exmpp_xml:get_attribute_as_binary(IQElement, type, undefined) of
  	<<"result">> ->
             gen_fsm:reply(From, ok),
@@ -796,7 +774,6 @@ wait_for_auth_result(?iq_no_attrs, State = #state{from_pid=From}) ->
 %% requirements. Check that a client can get the list of fields and
 %% override this simple method of registration.
 wait_for_register_result(?iq_no_attrs, State = #state{from_pid=From}) ->
-	io:format("wait_for_register_result", []),
     case exmpp_xml:get_attribute_as_binary(IQElement, type, undefined) of
  	<<"result">> ->
             gen_fsm:reply(From, ok),

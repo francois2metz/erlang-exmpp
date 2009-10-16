@@ -196,7 +196,7 @@ encode(Username, Password, Realm, Nonce, Cnonce, Digest, _Nc, _Qop) ->
         "charset=\"utf-8\"".
 
 plain(Username, Password, _Domain) ->
-	"\000"++Username++"\000"++Password.
+    "\000"++Username++"\000"++Password.
 
 %%
 sasl_step3(_ChallengeData, _Username, _Domain, _Password) ->
