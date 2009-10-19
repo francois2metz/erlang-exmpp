@@ -126,16 +126,16 @@ receiver_loop(ClientPid, Socket, StreamRef) ->
 	    gen_fsm:sync_send_all_state_event(ClientPid, tcp_closed, 20000)
     end.
 
-receiver_loop_tls(ClientPid, SocketDesc, StreamRef) ->
+receiver_loop_tls(ClientPid, Socket, StreamRef) ->
     receive
 	stop ->
 	    ok;
-	{tcp, Socket, Data} ->
-	    inet:setopts(Socket, [{active, once}]),
-            {ok, Data2} = exmpp_tls:recv_data(SocketDesc, Data),
-            {ok, NewStreamRef} = exmpp_xmlstream:parse(StreamRef, Data2),
-            receiver_loop_tls(ClientPid, SocketDesc, NewStreamRef);
-	{tcp_closed, _Socket} ->
+	{tcp, _Pid, EncryptedData} ->
+            exmpp_tls:setopts(Socket, [{active, once}]),
+            {ok, DecryptedData} = exmpp_tls:recv_data(Socket, EncryptedData),
+            {ok, NewStreamRef} = exmpp_xmlstream:parse(StreamRef, DecryptedData),
+            receiver_loop_tls(ClientPid, Socket, NewStreamRef);
+	{tcp_closed, _Pid} ->
 	    %% XXX why timeouts with timeout 10 seconds with quickchek tests ???
 	    gen_fsm:sync_send_all_state_event(ClientPid, tcp_closed, 20000)
     end.
