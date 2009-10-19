@@ -73,17 +73,12 @@ close(Socket, ReceiverPid) ->
     gen_tcp:close(Socket).
 
 send({tls_socket, _, _, _} = Socket, XMLPacket) ->
-    %% TODO: document_to_binary to reduce memory consumption
-    String = exmpp_xml:document_to_list(XMLPacket),
+    String = exmpp_xml:document_to_binary(XMLPacket),
     send_tls(Socket, String);
 
 send(Socket, XMLPacket) when is_record(XMLPacket, xmlel) ->
-    %% TODO: document_to_binary to reduce memory consumption
-    String = exmpp_xml:document_to_list(XMLPacket),
+    String = exmpp_xml:document_to_binary(XMLPacket),
     send(Socket, String);
-
-send(Socket, BPacket) when is_binary(BPacket) ->
-    send(Socket, binary_to_list(BPacket));
 
 send(Socket, String) ->
     case gen_tcp:send(Socket, String) of
