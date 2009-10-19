@@ -683,7 +683,7 @@ wait_for_sasl_result2(?saslexchange, State = #state{}) ->
     end.
 
 wait_for_sasl_result3(?saslexchange_successed, State) ->
-	restart_stream(State).
+    restart_stream(State).
 
 restart_stream(State = #state{connection = Module, 
                               connection_ref = ConnRef, 
@@ -692,9 +692,9 @@ restart_stream(State = #state{connection = Module,
     Domain = get_domain(Auth),
     exmpp_xmlstream:reset(StreamRef),
     ok = Module:send(ConnRef,
-                             exmpp_stream:opening(Domain,
-                                                  ?NS_JABBER_CLIENT,
-                                                  {1,0})),
+                     exmpp_stream:opening(Domain,
+                                          ?NS_JABBER_CLIENT,
+                                          {1,0})),
     {next_state, stream_restart, State}.
 
 stream_restart(?streamrestart, State) ->
