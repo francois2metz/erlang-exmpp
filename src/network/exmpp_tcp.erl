@@ -31,12 +31,6 @@
 %% Internal export
 -export([receiver/3]).
 
--record(tls_socket, {
-	  socket,
-	  packet_mode = binary,
-	  port
-	 }).
-
 %% Connect to XMPP server
 %% Returns:
 %% Ref or throw error
@@ -78,7 +72,7 @@ close(Socket, ReceiverPid) ->
     ReceiverPid ! stop,
     gen_tcp:close(Socket).
 
-send(Socket, XMLPacket) when is_record(Socket, tls_socket)  ->
+send({tls_socket, _, _, _} = Socket, XMLPacket) ->
     %% TODO: document_to_binary to reduce memory consumption
     String = exmpp_xml:document_to_list(XMLPacket),
     send_tls(Socket, String);
@@ -105,7 +99,10 @@ send_tls(Socket, String) ->
     end.
 
 starttls(Socket, ReceiverPid, StreamRef) when is_port(Socket) ->
-    Ret = {tls_socket, _, _, _} = exmpp_tls:connect({gen_tcp, Socket}, undefined, false, [{engine, openssl}]),
+    Ret = {tls_socket, _, _, _} = exmpp_tls:connect({gen_tcp, Socket}, 
+                                                    undefined, 
+                                                    false, 
+                                                    [{engine, openssl}, {mode, binary}]),
     ReceiverPid ! {tls, Ret, StreamRef},
     Ret.
 
