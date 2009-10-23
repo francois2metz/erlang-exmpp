@@ -712,11 +712,15 @@ stream_to_bind(?streamfeatures, State = #state{connection = Module,
         false -> ok
     end.
 
-stream_bind_result(?iq_no_attrs, State = #state{from_pid=From}) ->
+stream_bind_result(?iq_no_attrs, State = #state{from_pid=From,
+                                                auth_method=Auth}) ->
     case exmpp_xml:get_attribute_as_binary(IQElement, type, undefined) of
         <<"result">> ->
+            JID = exmpp_client_binding:bounded_jid(IQElement),
+            NewAuth = set_jid(Auth, JID),
             gen_fsm:reply(From, ok),
-            {next_state, logged_in, State#state{from_pid=undefined}};
+            {next_state, logged_in, State#state{from_pid=undefined,
+                                               auth_method=NewAuth}};
         <<"error">> ->
             Reason = exmpp_stanza:get_condition(IQElement),
             gen_fsm:reply(From, {auth_error, Reason}),
@@ -897,6 +901,9 @@ get_resource({_Type, _Method, JID, _Password}) when ?IS_JID(JID) ->
     exmpp_jid:resource_as_list(JID).
 get_password({_Type, _Method, _JID, Password}) when is_list(Password) ->
     Password.
+
+set_jid({Type, Method, _OldJid, Password}, JID) when ?IS_JID(JID) ->
+    {Type, Method, JID, Password}.
 
 get_method({basic, Method, _JID, _Password}) when is_atom(Method) ->
     Method.
