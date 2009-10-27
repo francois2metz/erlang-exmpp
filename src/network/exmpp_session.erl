@@ -978,7 +978,11 @@ process_message(ClientPid, Attrs, Packet) ->
 
 process_iq(ClientPid, Attrs, Packet) ->
     Type = get_attribute_value(Attrs, type, ""),
-    Who = exmpp_jid:to_lower(get_attribute_value(Attrs, from, "")),
+    From = case get_attribute_value(Attrs, from, "") of
+			"" -> exmpp_jid:to_lower(get_attribute_value(Attrs, to, ""));
+			_ = R -> R
+		  end,
+	Who = exmpp_jid:to_lower(From),
     Id = get_attribute_value(Attrs, id, ""),
     ClientPid ! #received_packet{packet_type = iq,
                                  type_attr = Type,
